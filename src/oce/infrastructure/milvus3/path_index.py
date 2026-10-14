@@ -14,6 +14,7 @@ from pymilvus import (
 )
 
 from oce.domain.services.path_search import PathSearchResult, PathSearchStore
+from oce.infrastructure.milvus3.client import _validate_blob_name
 from oce.shared.config.settings import MilvusSettings
 
 
@@ -166,12 +167,16 @@ class PathIndexClient:
         Returns:
             路径搜索结果列表
         """
+        if allowed_blob_names is not None and not allowed_blob_names:
+            return []
         await self.initialize()
 
         # 构建过滤表达式
         filter_expr = None
         if allowed_blob_names:
-            blob_list = ", ".join(f'"{name}"' for name in allowed_blob_names)
+            blob_list = ", ".join(
+                f'"{_validate_blob_name(name)}"' for name in allowed_blob_names
+            )
             filter_expr = f"blob_name in [{blob_list}]"
 
         # 执行搜索
@@ -209,7 +214,7 @@ class PathIndexClient:
         await self.initialize()
         
         # 嵌套 f-string 复用引号在 Python <3.12 解析器下报错，先拼好列表字面量再整体格式化。
-        quoted = ", ".join(f'"{name}"' for name in blob_names)
+        quoted = ", ".join(f'"{_validate_blob_name(name)}"' for name in blob_names)
         expr = f"blob_name in [{quoted}]"
         self.collection.delete(expr)
         logger.info(f"Deleted path documents for {len(blob_names)} blobs")

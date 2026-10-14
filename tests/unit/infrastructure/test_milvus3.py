@@ -282,10 +282,26 @@ class TestMilvus3Client:
 
     @pytest.mark.asyncio
     @patch("oce.infrastructure.milvus3.client.AsyncMilvusClient")
+    async def test_empty_scope_does_not_query_milvus(
+        self,
+        mock_milvus_client_class,
+        mock_settings,
+    ):
+        mock_client = mock_milvus_client_class.return_value
+        mock_client.search = AsyncMock()
+        client = Milvus3Client(mock_settings)
+
+        assert await client.search("query", [0.1], blob_filter=[]) == []
+        mock_client.search.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blob_name", ['x" or true', "\ufb00" * 64])
+    @patch("oce.infrastructure.milvus3.client.AsyncMilvusClient")
     async def test_blob_filters_reject_non_sha256_values(
         self,
         mock_milvus_client_class,
         mock_settings,
+        blob_name,
     ):
         mock_milvus_client_class.return_value = Mock()
         client = Milvus3Client(mock_settings)
@@ -294,10 +310,10 @@ class TestMilvus3Client:
             await client.search(
                 query_text="query",
                 query_embedding=[0.1] * 1024,
-                blob_filter=['x" or true'],
+                blob_filter=[blob_name],
             )
         with pytest.raises(ValueError, match="SHA256"):
-            await client.delete_by_blob('x" or true')
+            await client.delete_by_blob(blob_name)
 
     @pytest.mark.asyncio
     @patch("oce.infrastructure.milvus3.client.AsyncMilvusClient")

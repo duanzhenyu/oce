@@ -8,6 +8,7 @@ from oce.domain.chunk import Chunk, ChunkRef
 from oce.infrastructure.persistence.sql_blob_repo import SqlBlobRepository
 from oce.infrastructure.persistence.sql_chunk_repo import SqlChunkRepository
 from oce.infrastructure.persistence.sql_exact_search_store import SqlExactSearchStore
+from oce.infrastructure.persistence.symbol_search_store import SymbolSearchStore
 from oce.infrastructure.persistence.sql_chain_repo import SqlChainRepository
 from tests.conftest import make_sha256
 
@@ -214,6 +215,15 @@ async def test_exact_search_store_skips_unbounded_and_large_scopes(sqlite_sessio
 
     assert unbounded == []
     assert oversized == []
+
+
+async def test_symbol_search_empty_scope_does_not_query():
+    def factory():
+        raise AssertionError("empty scope must not query the database")
+
+    store = SymbolSearchStore(factory)
+
+    assert await store.search_exact(identifiers=["target"], allowed_blob_names=[]) == []
 
 
 @pytest.mark.asyncio

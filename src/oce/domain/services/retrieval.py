@@ -600,6 +600,9 @@ class RetrievalPipeline:
                         top_k=20,
                     )
                     for r in path_results:
+                        # 兜底：路径命中会被回填内容，范围外的 blob 绝不能进入结果
+                        if allowed_blob_names is not None and r.blob_name not in allowed_blob_names:
+                            continue
                         if r.blob_name not in path_scores or r.score > path_scores[r.blob_name]:
                             path_scores[r.blob_name] = r.score
                 logger.info(f"Path index returned {len(path_scores)} results")

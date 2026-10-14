@@ -11,6 +11,7 @@ from dataclasses import replace
 import pytest
 
 from oce.domain.services.intent.taxonomy import QueryIntent
+from oce.domain.services.path_search import PathSearchResult
 from oce.domain.services.retrieval import RetrievalPipeline, source_priority_factor
 from oce.domain.services.search import SearchHit
 from oce.shared.config.settings import RetrievalSettings
@@ -59,12 +60,13 @@ class FakeIntentClassifier:
 
 
 class FakePathStore:
-    def __init__(self):
+    def __init__(self, results=None):
         self.queries = 0
+        self.results = results or []
 
     async def search_paths(self, query_vector, allowed_blob_names=None, top_k=20):
         self.queries += 1
-        return []
+        return list(self.results)
 
 
 class FakeExactSearchStore:
@@ -247,6 +249,39 @@ class TestRetrievalPipeline:
 
         assert path_store.queries == 0
         assert [result.path for result in results] == ["src/commands/provider.rs"]
+
+    @pytest.mark.parametrize("has_content_hit", [True, False])
+    async def test_path_hits_outside_scope_are_dropped(self, has_content_hit):
+        in_scope, out_of_scope = "a" * 64, "b" * 64
+        content_hits = [replace(_hit("src/a.py", 0.9), blob_name=in_scope)]
+        pipe = RetrievalPipeline(
+            embedder=FakeEmbedder(),
+            store=FakeSearchStore(content_hits if has_content_hit else []),
+            path_store=FakePathStore(
+                [
+                    PathSearchResult("src/a.py", in_scope, 0.9),
+                    PathSearchResult("secret/b.py", out_of_scope, 0.9),
+                ]
+            ),
+            intent_classifier=FakeIntentClassifier(QueryIntent.PATH),
+            settings=_settings(confidence_floor=0.0, final_select_k=10),
+        )
+        fetched: list[str] = []
+
+        async def fake_fetch(blob_names, path_scores):
+            fetched.extend(blob_names)
+            return [
+                SearchHit(blob_name=name, path=f"{name[0]}.py", content="code", score=1.0)
+                for name in blob_names
+            ]
+
+        pipe._fetch_content_for_paths = fake_fetch
+
+        results = await pipe.search("a.py 文件在哪里", frozenset({in_scope}))
+
+        # 范围内文件无内容命中时仍须正常回填，兜底不能误杀
+        assert fetched == ([] if has_content_hit else [in_scope])
+        assert {result.blob_name for result in results} == {in_scope}
 
     async def test_exact_identifier_candidates_join_semantic_reranking(self):
         exact_store = FakeExactSearchStore(

@@ -229,6 +229,28 @@ async def test_codebase_retrieval_contract():
     }
 
 
+async def test_blob_name_fields_reject_non_sha256():
+    injected = 'x"] or blob_name not in ["'
+    headers = {"Authorization": "Bearer sk-dev"}
+    async with httpx.AsyncClient(transport=_transport(), base_url="http://test") as client:
+        responses = [
+            await client.post(
+                "/agents/codebase-retrieval",
+                headers=headers,
+                json={"information_request": "q", "blobs": {"added_blobs": [injected]}},
+            ),
+            await client.post(
+                "/checkpoint-blobs",
+                headers=headers,
+                json={"blobs": {"deleted_blobs": [injected]}},
+            ),
+            await client.post(
+                "/find-missing", headers=headers, json={"mem_object_names": [injected]}
+            ),
+        ]
+    assert [response.status_code for response in responses] == [422, 422, 422]
+
+
 async def test_nullable_blob_payload_is_normalized():
     async with httpx.AsyncClient(transport=_transport(), base_url="http://test") as client:
         response = await client.post(

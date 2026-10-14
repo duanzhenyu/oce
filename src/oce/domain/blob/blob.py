@@ -23,6 +23,11 @@ if TYPE_CHECKING:
     from oce.domain.chunk import ChunkRef
 
 
+def is_blob_name(value: str) -> bool:
+    """blob_name 必须是 SHA256 十六进制：它会被拼进 Milvus 过滤表达式。"""
+    return len(value) == 64 and all(c in "0123456789abcdef" for c in value.lower())
+
+
 class BlobStatus(str, Enum):
     """Blob 状态枚举"""
     PENDING = "pending"    # 等待嵌入
@@ -48,14 +53,9 @@ class Blob:
     
     def __post_init__(self):
         """验证不变量"""
-        if not self._is_valid_sha256(self.blob_name):
+        if not is_blob_name(self.blob_name):
             raise ValueError(f"Invalid blob_name (not SHA256): {self.blob_name}")
-    
-    @staticmethod
-    def _is_valid_sha256(s: str) -> bool:
-        """验证 SHA256 格式"""
-        return len(s) == 64 and all(c in "0123456789abcdef" for c in s.lower())
-    
+
     def add_chunk(self, chunk_ref: ChunkRef) -> None:
         """添加 Chunk 引用"""
         if chunk_ref not in self.chunks:

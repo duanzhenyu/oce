@@ -7,6 +7,7 @@ from loguru import logger
 from pymilvus import AsyncMilvusClient, MilvusClient
 from pymilvus.client.types import LoadState
 
+from oce.domain.blob.blob import is_blob_name
 from oce.shared.config.settings import MilvusSettings
 
 from .schema import create_oce_collection_schema
@@ -15,9 +16,7 @@ _MAX_CONTENT_BYTES = 65_535
 
 
 def _validate_blob_name(blob_name: str) -> str:
-    if len(blob_name) != 64 or any(
-            character not in "0123456789abcdef" for character in blob_name.casefold()
-    ):
+    if not is_blob_name(blob_name):
         raise ValueError("Milvus blob filters require a SHA256 blob_name")
     return blob_name
 
@@ -184,6 +183,9 @@ class Milvus3Client:
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
         """执行 Milvus dense 向量检索。"""
+        # 空范围必须返回空，不能退化成不带过滤的全库检索
+        if blob_filter is not None and not blob_filter:
+            return []
         filter_expr = None
         if blob_filter:
             blob_list = ", ".join(

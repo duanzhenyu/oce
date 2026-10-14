@@ -50,6 +50,8 @@ class SymbolSearchStore:
         identifiers = tuple(dict.fromkeys(item for item in identifiers if item))
         if not identifiers or top_k <= 0:
             return []
+        if allowed_blob_names is not None and not allowed_blob_names:
+            return []
 
         # 前置检查：scope 必须合理
         if allowed_blob_names is not None and self._max_scope_blobs > 0:
@@ -62,7 +64,11 @@ class SymbolSearchStore:
                     return await self._query_symbols(
                         session=session,
                         identifiers=identifiers,
-                        allowed_blob_names=frozenset(allowed_blob_names) if allowed_blob_names else None,
+                        allowed_blob_names=(
+                            frozenset(allowed_blob_names)
+                            if allowed_blob_names is not None
+                            else None
+                        ),
                         top_k=top_k,
                     )
         except TimeoutError:
@@ -99,7 +105,7 @@ class SymbolSearchStore:
         )
 
         # Scope 过滤
-        if allowed_blob_names:
+        if allowed_blob_names is not None:
             stmt = stmt.where(SymbolOccurrenceModel.blob_name.in_(allowed_blob_names))
 
         stmt = stmt.limit(max(top_k * 20, top_k))

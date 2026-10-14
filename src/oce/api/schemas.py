@@ -7,9 +7,22 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from oce.domain.blob.blob import is_blob_name
+
+
+def _require_blob_names(names: list[str]) -> list[str]:
+    if not all(is_blob_name(name) for name in names):
+        raise ValueError("blob names must be 64-char hex SHA256")
+    return names
+
 
 class FindMissingRequest(BaseModel):
     mem_object_names: list[str] = Field(default_factory=list)
+
+    @field_validator("mem_object_names")
+    @classmethod
+    def blob_names_only(cls, value: list[str]) -> list[str]:
+        return _require_blob_names(value)
 
 
 class FindMissingResponse(BaseModel):
@@ -86,6 +99,11 @@ class BlobsPayload(BaseModel):
     @classmethod
     def none_to_empty_list(cls, value: Any) -> Any:
         return [] if value is None else value
+
+    @field_validator("added_blobs", "deleted_blobs")
+    @classmethod
+    def blob_names_only(cls, value: list[str]) -> list[str]:
+        return _require_blob_names(value)
 
 
 class CodebaseRetrievalRequest(BaseModel):
