@@ -34,7 +34,7 @@ async def test_ingest_blobs_commits_one_transaction_for_the_batch():
         for index in range(3)
     )
 
-    result = await handler.handle(IngestBlobsCommand(blobs))
+    result = await handler.handle(IngestBlobsCommand("tenant-a", blobs))
 
     # 异步模式：ingest 只写元数据，返回 0
     assert result.chunk_count == 0
@@ -42,3 +42,6 @@ async def test_ingest_blobs_commits_one_transaction_for_the_batch():
     # 验证 staging 已保存
     for blob in blobs:
         assert factory.uow.blobs.staging.get(blob.blob_name) == blob.content
+    names = [blob.blob_name for blob in blobs]
+    assert await factory.uow.ownership.filter_owned("tenant-a", names) == set(names)
+    assert await factory.uow.ownership.filter_owned("tenant-b", names) == set()

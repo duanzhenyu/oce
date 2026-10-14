@@ -43,19 +43,22 @@ class SqlChainRepository(ChainRepository):
             updated_at=row.updated_at,
         )
 
-    async def exists(self, chain_id: str) -> bool:
+    async def exists(self, chain_id: str, tenant_id: str) -> bool:
         value = await self.session.scalar(
-            select(func.count()).select_from(ChainModel).where(ChainModel.chain_id == chain_id)
+            select(func.count())
+            .select_from(ChainModel)
+            .where(ChainModel.chain_id == chain_id, ChainModel.tenant_id == tenant_id)
         )
         return bool(value)
 
-    async def create(self, members: Sequence[str]) -> Chain:
+    async def create(self, members: Sequence[str], tenant_id: str) -> Chain:
         chain_id = uuid.uuid4().hex
         unique_members = sorted(set(members))
         now = datetime.now(timezone.utc)
         await self.session.execute(
             self._insert()(ChainModel).values(
                 chain_id=chain_id,
+                tenant_id=tenant_id,
                 version=1,
                 total_blobs=len(unique_members),
                 created_at=now,
@@ -75,11 +78,14 @@ class SqlChainRepository(ChainRepository):
     async def apply_checkpoint(
         self,
         chain_id: str,
+        tenant_id: str,
         added: Sequence[str],
         deleted: Sequence[str],
     ) -> int | None:
         current_version = await self.session.scalar(
-            select(ChainModel.version).where(ChainModel.chain_id == chain_id)
+            select(ChainModel.version).where(
+                ChainModel.chain_id == chain_id, ChainModel.tenant_id == tenant_id
+            )
         )
         if current_version is None:
             return None

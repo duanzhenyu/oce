@@ -35,6 +35,11 @@ from oce.api.schemas import (
     RetrievalReportResponse,
     RetrievalStatsResponse,
     StorageReportResponse,
+    TenantCreateRequest,
+    TenantListResponse,
+    TenantResponse,
+    TenantUpdateRequest,
+    TenantWithKeyResponse,
     TokenKindStatsResponse,
     TokensReportResponse,
 )
@@ -47,8 +52,13 @@ from oce.application.credential_admin import (
     CredentialUpdate,
 )
 from oce.application.service import RetrievalApplication
+from oce.application.tenant_admin import TenantCreated, TenantRecord, TenantUpdate
 from oce.auth import verify_admin_key
-from oce.shared.errors import CredentialConflictError
+from oce.shared.errors import (
+    CredentialConflictError,
+    DefaultTenantImmutableError,
+    TenantConflictError,
+)
 
 admin_router = APIRouter(
     prefix="/admin",
@@ -144,6 +154,84 @@ async def reload_credentials(
         pool_size=result.pool_size,
         reason=result.reason,
     )
+
+
+def _tenant_response(record: TenantRecord) -> TenantResponse:
+    return TenantResponse.model_validate(record, from_attributes=True)
+
+
+def _tenant_with_key(created: TenantCreated) -> TenantWithKeyResponse:
+    return TenantWithKeyResponse(
+        **_tenant_response(created.record).model_dump(), api_key=created.api_key
+    )
+
+
+def _tenant_not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail="tenant not found")
+
+
+@admin_router.get("/tenants", response_model=TenantListResponse)
+async def list_tenants(
+    application: RetrievalApplication = Depends(get_application),
+) -> TenantListResponse:
+    records = await application.list_tenants()
+    return TenantListResponse(tenants=[_tenant_response(record) for record in records])
+
+
+@admin_router.post("/tenants", response_model=TenantWithKeyResponse, status_code=201)
+async def create_tenant(
+    request: TenantCreateRequest,
+    application: RetrievalApplication = Depends(get_application),
+) -> TenantWithKeyResponse:
+    try:
+        created = await application.create_tenant(request.name)
+    except TenantConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _tenant_with_key(created)
+
+
+@admin_router.patch("/tenants/{tenant_id}", response_model=TenantResponse)
+async def update_tenant(
+    tenant_id: str,
+    request: TenantUpdateRequest,
+    application: RetrievalApplication = Depends(get_application),
+) -> TenantResponse:
+    try:
+        record = await application.update_tenant(
+            tenant_id, TenantUpdate(**request.model_dump())
+        )
+    except (TenantConflictError, DefaultTenantImmutableError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise _tenant_not_found()
+    return _tenant_response(record)
+
+
+@admin_router.post("/tenants/{tenant_id}/rotate-key", response_model=TenantWithKeyResponse)
+async def rotate_tenant_key(
+    tenant_id: str,
+    application: RetrievalApplication = Depends(get_application),
+) -> TenantWithKeyResponse:
+    try:
+        created = await application.rotate_tenant_key(tenant_id)
+    except DefaultTenantImmutableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if created is None:
+        raise _tenant_not_found()
+    return _tenant_with_key(created)
+
+
+@admin_router.delete("/tenants/{tenant_id}", status_code=204)
+async def delete_tenant(
+    tenant_id: str,
+    application: RetrievalApplication = Depends(get_application),
+) -> None:
+    try:
+        deleted = await application.delete_tenant(tenant_id)
+    except DefaultTenantImmutableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise _tenant_not_found()
 
 
 def hot_config_allowed() -> bool:

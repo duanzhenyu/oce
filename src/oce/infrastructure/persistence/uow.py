@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from oce.infrastructure.persistence.sql_blob_repo import SqlBlobRepository
 from oce.infrastructure.persistence.sql_chain_repo import SqlChainRepository
 from oce.infrastructure.persistence.sql_chunk_repo import SqlChunkRepository
+from oce.infrastructure.persistence.sql_ownership_repo import SqlOwnershipRepository
 
 
 class SqlAlchemyUnitOfWork:
@@ -21,6 +22,7 @@ class SqlAlchemyUnitOfWork:
         self.blobs = SqlBlobRepository(self.session)
         self.chunks = SqlChunkRepository(self.session)
         self.chains = SqlChainRepository(self.session)
+        self.ownership = SqlOwnershipRepository(self.session)
         return self
 
     async def __aexit__(self, exc_type, exc, traceback) -> None:

@@ -451,12 +451,18 @@ class Settings(BaseSettings):
     # API
     api_key: str = Field(
         default="sk-opencontextengine",
-        description="API 认证密钥；个人模式用与客户端约定的固定值，服务模式须改为强随机值",
+        description=(
+            "数据面密钥，对应内置 default 租户；置空即关闭该入口"
+            "（多租户部署推荐置空并设置 ADMIN_API_KEY）。服务模式若保留须改为强随机值"
+        ),
         json_schema_extra={"tier": 1},
     )
     admin_api_key: str = Field(
         default="",
-        description="Admin 接口密钥；空则回落 API_KEY，一旦配置则 admin 接口只认此 key",
+        description=(
+            "Admin 接口密钥；空则回落 API_KEY，一旦配置则 admin 接口只认此 key；"
+            "两者都空则 admin 接口关闭"
+        ),
         json_schema_extra={"tier": 1, "scope": "service"},
     )
     cors_origins: str = Field(

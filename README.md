@@ -213,6 +213,47 @@ environment variables (`EMBED_*`, `RERANK_*`, `LLM_*`; rerank also reuses the em
 key). Manage rows through the `/admin/credentials` API, then call
 `POST /admin/credentials/reload` to hot-reload every client without a restart.
 
+### Multi-tenancy
+
+Give each team or user its own data-plane key. Uploaded content is still stored and
+embedded once for the whole server, but a tenant can retrieve only the content it uploaded
+itself and the checkpoints it created — knowing another tenant's blob names or checkpoint
+ID is not enough.
+
+1. In `.env`, set a strong `ADMIN_API_KEY` and clear `API_KEY` (`API_KEY=`). `API_KEY`
+   maps to the built-in `default` tenant, which owns everything indexed before the
+   upgrade; leaving it empty disables that entry point. With both keys empty, `/admin/*`
+   is disabled too.
+2. Create a tenant. The plaintext key is returned **only once**:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8986/admin/tenants \
+     -H "Authorization: Bearer $ADMIN_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"name": "team-a"}'
+   ```
+
+3. Configure that tenant's clients with the returned `api_key` instead of `API_KEY`.
+4. Rotate a key (the old key stops working immediately) or disable a tenant:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8986/admin/tenants/<tenant_id>/rotate-key \
+     -H "Authorization: Bearer $ADMIN_API_KEY"
+   curl -X PATCH http://127.0.0.1:8986/admin/tenants/<tenant_id> \
+     -H "Authorization: Bearer $ADMIN_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"status": "disabled"}'
+   ```
+
+`GET /admin/tenants` lists tenants; `DELETE /admin/tenants/<tenant_id>` deletes a tenant
+and its checkpoints, and purges content no other tenant owns. The `default` tenant is
+managed through `API_KEY` and cannot be modified, rotated, or deleted. Tenant keys never
+grant access to `/admin/*`.
+
+Content shared across tenants must be uploaded once by each tenant before that tenant can
+retrieve it (`find-missing` reports it as unknown, so clients re-upload it). Identical
+content is not embedded again.
+
 ## Features
 
 - **Hybrid retrieval** — concurrent dense semantic recall (Milvus 3.0), exact identifier lookup (`symbol_occurrences`), and an independent path index, fused with weighted rank fusion.
@@ -255,7 +296,7 @@ exemptions.
 Three auth tiers:
 
 - **Public** (no auth) — `GET /health`, `GET /version`
-- **Data plane** — `Authorization: Bearer <API_KEY>`
+- **Data plane** — `Authorization: Bearer <API_KEY>` or a tenant key (see [Multi-tenancy](#multi-tenancy))
 - **Admin** (`/admin/*`) — `Authorization: Bearer <ADMIN_API_KEY>`; falls back to `API_KEY` when unset
 
 For the full endpoint reference, open the auto-generated interactive docs at

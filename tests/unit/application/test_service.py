@@ -59,6 +59,7 @@ async def test_retrieve_passes_deleted_blobs_to_scope_without_delete_side_effect
 
     result = await application.retrieve(
         "entry point",
+        tenant_id="tenant-a",
         checkpoint_id="chain:1",
         added_blobs=["blob-a"],
         deleted_blobs=["blob-b"],
@@ -66,6 +67,7 @@ async def test_retrieve_passes_deleted_blobs_to_scope_without_delete_side_effect
 
     assert not any(isinstance(item, DeleteBlobsCommand) for item in commands.commands)
     scope_query = next(q for q in queries.queries if isinstance(q, ResolveScopeQuery))
+    assert scope_query.tenant_id == "tenant-a"
     assert scope_query.checkpoint_id == "chain:1"
     assert scope_query.added_blobs == ("blob-a",)
     assert scope_query.deleted_blobs == ("blob-b",)
@@ -85,7 +87,7 @@ async def test_retrieve_with_empty_scope_requests_empty_search():
 
     application = RetrievalApplication(SpyCommandBus(), EmptyScopeQueries())
 
-    result = await application.retrieve("entry point")
+    result = await application.retrieve("entry point", tenant_id="tenant-a")
 
     assert result.hits == ()
 
@@ -107,7 +109,7 @@ async def test_batch_upload_does_not_embed_synchronously_with_background_worker(
         background_indexing=True,
     )
 
-    result = await application.batch_upload([])
+    result = await application.batch_upload([], tenant_id="tenant-a")
 
     assert result.embedded_count == 0
     assert sum(isinstance(item, IngestBlobsCommand) for item in commands.commands) == 1
@@ -133,9 +135,12 @@ async def test_batch_upload_registers_blobs_to_checkpoint_when_id_given():
     application = RetrievalApplication(commands, SpyQueryBus())
     blob = BlobUpload("src/a.py", "print(1)\n")
 
-    await application.batch_upload([blob], checkpoint_id="chain:2")
+    await application.batch_upload([blob], tenant_id="tenant-a", checkpoint_id="chain:2")
 
+    ingest = next(c for c in commands.commands if isinstance(c, IngestBlobsCommand))
     checkpoint = next(c for c in commands.commands if isinstance(c, CheckpointCommand))
+    assert ingest.tenant_id == "tenant-a"
+    assert checkpoint.tenant_id == "tenant-a"
     assert checkpoint.checkpoint_id == "chain:2"
     assert checkpoint.added_blobs == (compute_blob_name(blob.path, blob.content),)
     assert checkpoint.deleted_blobs == ()
@@ -145,6 +150,8 @@ async def test_batch_upload_without_checkpoint_id_skips_checkpoint():
     commands = UploadCommandBus()
     application = RetrievalApplication(commands, SpyQueryBus())
 
-    await application.batch_upload([BlobUpload("src/a.py", "print(1)\n")])
+    await application.batch_upload(
+        [BlobUpload("src/a.py", "print(1)\n")], tenant_id="tenant-a"
+    )
 
     assert not any(isinstance(c, CheckpointCommand) for c in commands.commands)

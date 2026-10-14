@@ -88,6 +88,20 @@ from oce.application.queries.status import (
     ResolveScopeQueryHandler,
 )
 from oce.application.service import RetrievalApplication
+from oce.application.tenant_admin import (
+    AuthenticateTenantQuery,
+    AuthenticateTenantQueryHandler,
+    CreateTenantCommand,
+    CreateTenantCommandHandler,
+    DeleteTenantCommand,
+    DeleteTenantCommandHandler,
+    ListTenantsQuery,
+    ListTenantsQueryHandler,
+    RotateTenantKeyCommand,
+    RotateTenantKeyCommandHandler,
+    UpdateTenantCommand,
+    UpdateTenantCommandHandler,
+)
 from oce.application.factories.chunker import build_chunker
 from oce.application.factories.retrieval import RetrievalDeps, build_retrieval_stack
 from oce.application.worker import EmbedWorker
@@ -98,6 +112,7 @@ from oce.infrastructure.milvus3.path_index import PathIndexClient
 from oce.infrastructure.persistence.credential_admin_store import (
     SqlCredentialAdminStore,
 )
+from oce.infrastructure.persistence.tenant_admin_store import SqlTenantAdminStore
 from oce.infrastructure.persistence.uow import SqlAlchemyUnitOfWork
 from oce.infrastructure.metrics.cleanup import MonitoringCleaner
 from oce.infrastructure.metrics.resource_sampler import (
@@ -392,6 +407,26 @@ class Container:
             GcCommandHandler(self._uow_factory, delete_blobs_handler, self.queue),
         )
 
+        tenant_admin_store = SqlTenantAdminStore(async_session_factory)
+        command_bus.register(
+            CreateTenantCommand,
+            CreateTenantCommandHandler(tenant_admin_store),
+        )
+        command_bus.register(
+            UpdateTenantCommand,
+            UpdateTenantCommandHandler(tenant_admin_store),
+        )
+        command_bus.register(
+            RotateTenantKeyCommand,
+            RotateTenantKeyCommandHandler(tenant_admin_store),
+        )
+        command_bus.register(
+            DeleteTenantCommand,
+            DeleteTenantCommandHandler(
+                tenant_admin_store, delete_blobs_handler, self.queue
+            ),
+        )
+
         query_bus = QueryBus()
         # handler 由工厂构造（与热重载共用同一路径），此处只负责注册。
         query_bus.register(SearchQuery, stack.handler)
@@ -460,6 +495,14 @@ class Container:
         query_bus.register(
             QueueStatusQuery,
             QueueStatusQueryHandler(self._uow_factory, self.queue),
+        )
+        query_bus.register(
+            ListTenantsQuery,
+            ListTenantsQueryHandler(tenant_admin_store),
+        )
+        query_bus.register(
+            AuthenticateTenantQuery,
+            AuthenticateTenantQueryHandler(tenant_admin_store),
         )
 
         # L0 检索参数热重载器：复用同一份 deps（昂贵对象不重建）+ query_bus（原子重注册

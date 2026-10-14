@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, Sequence
+from typing import TYPE_CHECKING, Collection, Protocol, Sequence
 
 if TYPE_CHECKING:
     from oce.domain.blob.blob import Blob
@@ -54,15 +54,16 @@ class BlobRepository(Protocol):
 class ChainRepository(Protocol):
     async def get(self, chain_id: str) -> Chain | None: ...
 
-    async def exists(self, chain_id: str) -> bool: ...
+    async def exists(self, chain_id: str, tenant_id: str) -> bool: ...
 
-    async def create(self, members: Sequence[str]) -> Chain: ...
+    async def create(self, members: Sequence[str], tenant_id: str) -> Chain: ...
 
     async def get_members(self, chain_id: str) -> set[str]: ...
 
     async def apply_checkpoint(
         self,
         chain_id: str,
+        tenant_id: str,
         added: Sequence[str],
         deleted: Sequence[str],
     ) -> int | None: ...
@@ -72,6 +73,22 @@ class ChainRepository(Protocol):
     async def delete(self, chain_id: str) -> None: ...
 
     async def find_expired(self, ttl_days: int) -> list[str]: ...
+
+
+class OwnershipRepository(Protocol):
+    """租户对 blob 的归属：只由上传授予，检索范围必须与之取交集。"""
+
+    async def grant(self, tenant_id: str, blob_names: Sequence[str]) -> None: ...
+
+    async def filter_owned(self, tenant_id: str, blob_names: Collection[str]) -> set[str]: ...
+
+    async def filter_unowned(self, blob_names: Collection[str]) -> set[str]:
+        """没有任何租户拥有的 blob：删除租户后物理清理前的复核。"""
+        ...
+
+    async def owned_chain_members(self, tenant_id: str, chain_id: str) -> set[str]:
+        """本租户 chain 中本租户拥有的成员；别人的 chain 返回空集。"""
+        ...
 
 
 class ChunkRepository(Protocol):

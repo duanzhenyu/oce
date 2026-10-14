@@ -10,16 +10,22 @@ from sqlalchemy import create_engine, inspect, text
 
 
 _SCRIPT_LOCATION = Path(oce.__file__).resolve().parent / "alembic"
+_PRE_TENANT_REVISION = "e2f4a6c8d0b1"
+
+
+def _alembic_config():
+    from alembic.config import Config
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(_SCRIPT_LOCATION))
+    return cfg
 
 
 def _head_revision() -> str:
     """动态读取迁移链 head，避免每新增一个迁移都要改测试硬编码。"""
-    from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    cfg = Config()
-    cfg.set_main_option("script_location", str(_SCRIPT_LOCATION))
-    return ScriptDirectory.from_config(cfg).get_current_head()
+    return ScriptDirectory.from_config(_alembic_config()).get_current_head()
 
 
 @pytest.fixture
@@ -54,6 +60,7 @@ def test_run_migrations_creates_head_schema(sqlite_url: str) -> None:
         engine.dispose()
 
     assert {"blobs", "chunks", "blob_chunks", "symbol_occurrences"}.issubset(tables)
+    assert {"tenants", "tenant_blobs"}.issubset(tables)
     # 监控迁移链（含检索审计）也应被建出
     assert {
         "api_call_metrics",
@@ -118,3 +125,68 @@ def test_symbol_occurrences_insert_auto_id_on_sqlite(sqlite_url: str) -> None:
 
     assert row is not None
     assert row.id == 1
+
+
+def test_tenant_migration_assigns_existing_data_to_default(sqlite_url: str) -> None:
+    from alembic import command
+
+    cfg = _alembic_config()
+    command.upgrade(cfg, _PRE_TENANT_REVISION)
+    engine = _sync_engine(sqlite_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO blobs (blob_name, path, content_size, file_type, status) "
+                    "VALUES ('blob-1', 'a.py', 1, 'text', 'ready'), "
+                    "('blob-2', 'b.py', 1, 'text', 'pending')"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO chains (chain_id, version, total_blobs, total_chunks) "
+                    "VALUES ('chain-1', 1, 0, 0)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(cfg, "head")
+
+    engine = _sync_engine(sqlite_url)
+    try:
+        with engine.begin() as conn:
+            tenants = conn.execute(
+                text("SELECT tenant_id, name, status, api_key_hash FROM tenants")
+            ).all()
+            owned = conn.execute(
+                text("SELECT tenant_id, blob_name FROM tenant_blobs ORDER BY blob_name")
+            ).all()
+            chain_tenant = conn.execute(text("SELECT tenant_id FROM chains")).scalar()
+    finally:
+        engine.dispose()
+
+    assert [tuple(row) for row in tenants] == [("default", "default", "active", None)]
+    assert [tuple(row) for row in owned] == [("default", "blob-1"), ("default", "blob-2")]
+    assert chain_tenant == "default"
+
+
+def test_tenant_migration_downgrade_round_trip(sqlite_url: str) -> None:
+    from alembic import command
+
+    cfg = _alembic_config()
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, _PRE_TENANT_REVISION)
+
+    engine = _sync_engine(sqlite_url)
+    try:
+        with engine.begin() as conn:
+            inspector = inspect(conn)
+            tables = set(inspector.get_table_names())
+            chain_columns = {column["name"] for column in inspector.get_columns("chains")}
+    finally:
+        engine.dispose()
+
+    assert not {"tenants", "tenant_blobs"} & tables
+    assert "tenant_id" not in chain_columns
+    command.upgrade(cfg, "head")

@@ -58,6 +58,17 @@ from oce.application.queries.status import (
     ResolveScopeQuery,
     ResolveScopeResult,
 )
+from oce.application.tenant_admin import (
+    AuthenticateTenantQuery,
+    CreateTenantCommand,
+    DeleteTenantCommand,
+    ListTenantsQuery,
+    RotateTenantKeyCommand,
+    TenantCreated,
+    TenantRecord,
+    TenantUpdate,
+    UpdateTenantCommand,
+)
 from oce.domain.services.formatter import format_retrieval
 from oce.domain.services.search import SearchHit
 from oce.shared.metrics_read import MonitoringStats
@@ -111,8 +122,11 @@ class RetrievalApplication:
         self._queries = query_bus
         self._background_indexing = background_indexing
 
-    async def find_missing(self, blob_names: list[str]) -> FindMissingResult:
-        return await self._queries.ask(FindMissingQuery(tuple(blob_names)))
+    # 数据面方法的 tenant_id 均为必填关键字参数：漏传直接报错，而不是静默落到 default 租户
+    async def find_missing(
+        self, blob_names: list[str], *, tenant_id: str
+    ) -> FindMissingResult:
+        return await self._queries.ask(FindMissingQuery(tenant_id, tuple(blob_names)))
 
     async def reload_embedding_credentials(
         self,
@@ -149,6 +163,7 @@ class RetrievalApplication:
         self,
         blobs: list[BlobUpload],
         *,
+        tenant_id: str,
         checkpoint_id: str | None = None,
     ) -> BatchUploadResult:
         commands = tuple(
@@ -160,7 +175,7 @@ class RetrievalApplication:
             for blob in blobs
         )
         names = [command.blob_name for command in commands]
-        result = await self._commands.execute(IngestBlobsCommand(commands))
+        result = await self._commands.execute(IngestBlobsCommand(tenant_id, commands))
         embedded_count = 0
         if not self._background_indexing:
             embedded = await self._commands.execute(EmbedPendingCommand(tuple(names)))
@@ -169,7 +184,7 @@ class RetrievalApplication:
             # 可选：上传内容索引后，把本次 blob 直接登记进已有 checkpoint 链
             # （CheckpointCommand 对非空 checkpoint_id 只推进已有链，不会隐式创建）
             await self._commands.execute(
-                CheckpointCommand(checkpoint_id, tuple(names), ())
+                CheckpointCommand(tenant_id, checkpoint_id, tuple(names), ())
             )
         return BatchUploadResult(tuple(names), result.chunk_count, embedded_count)
 
@@ -177,6 +192,7 @@ class RetrievalApplication:
         self,
         information_request: str,
         *,
+        tenant_id: str,
         checkpoint_id: str | None = None,
         added_blobs: list[str] | None = None,
         deleted_blobs: list[str] | None = None,
@@ -184,7 +200,7 @@ class RetrievalApplication:
         started = time.perf_counter()
         added = tuple(added_blobs or ())
         deleted = tuple(deleted_blobs or ())
-        scope = await self._prepare_scope(checkpoint_id, added, deleted)
+        scope = await self._prepare_scope(tenant_id, checkpoint_id, added, deleted)
         result = await self._queries.ask(
             SearchQuery(information_request, scope.blob_names, source="retrieval")
         )
@@ -197,25 +213,33 @@ class RetrievalApplication:
 
     async def _prepare_scope(
         self,
+        tenant_id: str,
         checkpoint_id: str | None,
         added: tuple[str, ...],
         deleted: tuple[str, ...],
     ) -> ResolveScopeResult:
         # 查询路径对 deleted_blobs 无副作用：只做本次检索范围差集，不删除任何服务端
         # 数据。物理清理由独立 GC 流程负责。
-        if added and not self._background_indexing:
-            await self._commands.execute(EmbedPendingCommand(added))
-        return await self._queries.ask(ResolveScopeQuery(checkpoint_id, added, deleted))
+        scope = await self._queries.ask(
+            ResolveScopeQuery(tenant_id, checkpoint_id, added, deleted)
+        )
+        # 先解析范围再嵌入：只同步嵌入本租户范围内的 added，不替别人触发嵌入
+        embeddable = tuple(name for name in added if name in scope.blob_names)
+        if embeddable and not self._background_indexing:
+            await self._commands.execute(EmbedPendingCommand(embeddable))
+        return scope
 
     async def checkpoint(
         self,
         *,
+        tenant_id: str,
         checkpoint_id: str | None,
         added_blobs: list[str],
         deleted_blobs: list[str],
     ) -> CheckpointResult:
         return await self._commands.execute(
             CheckpointCommand(
+                tenant_id,
                 checkpoint_id,
                 tuple(added_blobs),
                 tuple(deleted_blobs),
@@ -225,11 +249,12 @@ class RetrievalApplication:
     async def blob_status(
         self,
         *,
+        tenant_id: str,
         blob_names: list[str],
         checkpoint_id: str | None,
     ) -> BlobStatusResult:
         return await self._queries.ask(
-            BlobStatusQuery(tuple(blob_names), checkpoint_id)
+            BlobStatusQuery(tenant_id, tuple(blob_names), checkpoint_id)
         )
 
     async def monitoring_stats(self, *, window_hours: int = 24) -> MonitoringStats:
@@ -313,3 +338,23 @@ class RetrievalApplication:
         return await self._commands.execute(
             DuplicateCredentialCommand(credential_id, changes)
         )
+
+    async def authenticate(self, api_key: str) -> str | None:
+        return await self._queries.ask(AuthenticateTenantQuery(api_key))
+
+    async def list_tenants(self) -> list[TenantRecord]:
+        return await self._queries.ask(ListTenantsQuery())
+
+    async def create_tenant(self, name: str) -> TenantCreated:
+        return await self._commands.execute(CreateTenantCommand(name))
+
+    async def update_tenant(
+        self, tenant_id: str, changes: TenantUpdate
+    ) -> TenantRecord | None:
+        return await self._commands.execute(UpdateTenantCommand(tenant_id, changes))
+
+    async def rotate_tenant_key(self, tenant_id: str) -> TenantCreated | None:
+        return await self._commands.execute(RotateTenantKeyCommand(tenant_id))
+
+    async def delete_tenant(self, tenant_id: str) -> bool:
+        return await self._commands.execute(DeleteTenantCommand(tenant_id))

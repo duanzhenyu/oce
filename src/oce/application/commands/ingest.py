@@ -65,6 +65,7 @@ class IngestBlobCommandHandler:
 
 @dataclass(frozen=True)
 class IngestBlobsCommand(Command):
+    tenant_id: str
     blobs: tuple[IngestBlobCommand, ...]
 
 
@@ -110,6 +111,12 @@ class IngestBlobsCommandHandler:
                 stored = await uow.blobs.get(blob.blob_name)
                 if stored is not None and stored.status == BlobStatus.PENDING:
                     pending_names.append(blob.blob_name)
+            # 归属必须在 ingest 之后授予：二进制/忽略文件重新入库会先删后存，连带清掉
+            # 所有租户对它的归属。放在之后，本租户立即恢复；其他租户下次 find-missing
+            # 看到 unknown 后重传即自愈。
+            await uow.ownership.grant(
+                command.tenant_id, [blob.blob_name for blob in command.blobs]
+            )
             await uow.commit()
         if self._queue is not None:
             for blob_name in pending_names:
@@ -182,6 +189,8 @@ class EmbedPendingCommandHandler:
 @dataclass(frozen=True)
 class DeleteBlobsCommand(Command):
     blob_names: tuple[str, ...]
+    # 删除租户的孤儿清理：只删仍无任何租户拥有的 blob
+    only_if_unowned: bool = False
 
 
 class DeleteBlobsCommandHandler:
@@ -196,15 +205,22 @@ class DeleteBlobsCommandHandler:
         self._path_store = path_store
 
     async def handle(self, command: DeleteBlobsCommand) -> None:
-        if not command.blob_names:
+        names = command.blob_names
+        if not names:
             return
         async with self._uow_factory() as uow:
-            await uow.blobs.delete_many(command.blob_names)
+            if command.only_if_unowned:
+                # 孤儿可能在算出后已被别的租户重新上传认领：与删除同一事务内复核
+                unowned = await uow.ownership.filter_unowned(names)
+                names = tuple(name for name in names if name in unowned)
+                if not names:
+                    return
+            await uow.blobs.delete_many(names)
             await uow.commit()
-        await self._vector_index.delete(list(command.blob_names))
+        await self._vector_index.delete(list(names))
         if self._path_store is not None:
             try:
-                await self._path_store.delete_by_blob_names(list(command.blob_names))
+                await self._path_store.delete_by_blob_names(list(names))
             except Exception as exc:
                 # 路径索引删除失败不阻塞删除主流程，仅记日志
-                logger.warning("path index delete failed for {} blobs: {}", len(command.blob_names), exc)
+                logger.warning("path index delete failed for {} blobs: {}", len(names), exc)

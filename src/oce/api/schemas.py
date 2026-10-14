@@ -518,6 +518,41 @@ class CredentialDuplicateRequest(BaseModel):
     num_rewrites: int | None = None
 
 
+TenantStatus = Literal["active", "disabled"]
+
+
+class TenantResponse(BaseModel):
+    """租户视图：不含明文 key 与 hash，只暴露尾 4 位。"""
+
+    tenant_id: str
+    name: str
+    status: str
+    api_key_last4: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class TenantWithKeyResponse(TenantResponse):
+    """新建租户或轮换 key 的响应：明文 api_key 只在此返回一次。"""
+
+    api_key: str
+
+
+class TenantListResponse(BaseModel):
+    tenants: list[TenantResponse] = Field(default_factory=list)
+
+
+class TenantCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
+class TenantUpdateRequest(BaseModel):
+    """部分更新：省略的字段不改。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    status: TenantStatus | None = None
+
+
 class QueueStatusResponse(BaseModel):
     enabled: bool
     main_size: int = 0

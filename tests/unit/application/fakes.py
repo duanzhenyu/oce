@@ -75,31 +75,57 @@ class FakeChainRepo:
 
     def __init__(self) -> None:
         self.chains: dict[str, Chain] = {}
+        self.tenants: dict[str, str] = {}
 
-    async def create(self, members) -> Chain:
+    async def create(self, members, tenant_id: str) -> Chain:
         chain = Chain.create(list(members))
         self.chains[chain.chain_id] = chain
+        self.tenants[chain.chain_id] = tenant_id
         return chain
 
     async def get(self, chain_id: str) -> Chain | None:
         return self.chains.get(chain_id)
 
-    async def exists(self, chain_id: str) -> bool:
-        return chain_id in self.chains
+    async def exists(self, chain_id: str, tenant_id: str) -> bool:
+        return self.tenants.get(chain_id) == tenant_id
 
     async def get_members(self, chain_id: str) -> set[str]:
         chain = self.chains.get(chain_id)
         return set(chain.members) if chain else set()
 
-    async def apply_checkpoint(self, chain_id, added, deleted) -> int | None:
-        chain = self.chains.get(chain_id)
-        if chain is None:
+    async def apply_checkpoint(self, chain_id, tenant_id, added, deleted) -> int | None:
+        if self.tenants.get(chain_id) != tenant_id:
             return None
+        chain = self.chains[chain_id]
         chain.apply_checkpoint(list(added), list(deleted))
         return chain.version
 
     async def touch_members(self, chain_id: str) -> None:
         pass
+
+
+class FakeOwnershipRepo:
+    """OwnershipRepository 内存替身"""
+
+    def __init__(self, chain_repo: FakeChainRepo) -> None:
+        self.chain_repo = chain_repo
+        self.owned: set[tuple[str, str]] = set()
+
+    async def grant(self, tenant_id: str, blob_names) -> None:
+        self.owned.update((tenant_id, name) for name in blob_names)
+
+    async def filter_owned(self, tenant_id: str, blob_names) -> set[str]:
+        return {name for name in blob_names if (tenant_id, name) in self.owned}
+
+    async def filter_unowned(self, blob_names) -> set[str]:
+        owned = {name for _, name in self.owned}
+        return set(blob_names) - owned
+
+    async def owned_chain_members(self, tenant_id: str, chain_id: str) -> set[str]:
+        if not await self.chain_repo.exists(chain_id, tenant_id):
+            return set()
+        members = await self.chain_repo.get_members(chain_id)
+        return await self.filter_owned(tenant_id, members)
 
 
 class FakeChunkRepo:
@@ -181,6 +207,7 @@ class FakeUnitOfWork:
         self.blobs = FakeBlobRepo()
         self.chunks = FakeChunkRepo(self.blobs)
         self.chains = FakeChainRepo()
+        self.ownership = FakeOwnershipRepo(self.chains)
         self.commits = 0
 
     async def __aenter__(self):

@@ -11,7 +11,8 @@ OpenContextEngine (`oce`) 是 ACE 兼容的代码检索服务：
 - Milvus 3.0 仅做 dense 向量检索，BM25/sparse 已移除；路径索引独立维护
 - 检索主链路：dense + exact + path → source priority → LLM rerank → coverage select
 - 模型凭据集中在 `model_credentials` 单表，按 kind（embed/rerank/llm_rerank/query_rewrite/intent）+ status=active + 最小 priority 解析；无匹配行时回落对应环境变量（`EMBED_*`/`RERANK_*`/`LLM_*`，`RERANK_API_KEY` 为空再复用 `EMBED_API_KEY`）
-- 运维面 `/admin/*` 用独立 `ADMIN_API_KEY`（空则回落 `API_KEY`）：凭据 CRUD/热重载、队列、GC、指标
+- 运维面 `/admin/*` 用独立 `ADMIN_API_KEY`（空则回落 `API_KEY`）：凭据 CRUD/热重载、租户管理、队列、GC、指标
+- 数据面按租户隔离：env `API_KEY` 映射内置 `default` 租户，租户 key 经 `/admin/tenants` 管理（只存 sha256）。blob/chunk/向量全局共享去重，归属（`tenant_blobs`）只由 batch-upload 授予；检索范围、find-missing/blob-status 都要与本租户归属取交集，chain 按 `(chain_id, tenant_id)` 访问，别人的 chain 与不存在同一报错
 - 监控子系统旁路采集调用/token/资源与检索阶段审计，落 metrics 表
 - FastAPI + DDD/CQRS 分层
 

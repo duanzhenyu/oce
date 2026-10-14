@@ -15,8 +15,10 @@ from oce.domain.chunk import ChunkRef
 from oce.infrastructure.persistence.models import (
     BlobChunkModel,
     BlobModel,
+    BlobStagingModel,
     ChunkModel,
     SymbolOccurrenceModel,
+    TenantBlobModel,
 )
 from oce.domain.repositories import BlobRepository
 from oce.infrastructure.persistence.symbol_extractor import SymbolExtractor
@@ -128,6 +130,9 @@ class SqlBlobRepository(BlobRepository):
         await self.session.execute(
             delete(BlobChunkModel).where(BlobChunkModel.blob_name.in_(blob_names))
         )
+        # SQLite 未开外键，ondelete=CASCADE 不生效：原文缓冲、符号索引、归属行须显式删除
+        for model in (BlobStagingModel, SymbolOccurrenceModel, TenantBlobModel):
+            await self.session.execute(delete(model).where(model.blob_name.in_(blob_names)))
         await self.session.execute(delete(BlobModel).where(BlobModel.blob_name.in_(blob_names)))
         if content_hashes:
             referenced = select(BlobChunkModel.content_hash).where(

@@ -202,6 +202,43 @@ admin key 只保存在浏览器本地存储中——不要写入 URL、仓库或
 复用嵌入 key）。通过 `/admin/credentials` API 管理这些行，再调
 `POST /admin/credentials/reload` 即可不重启热重载所有客户端。
 
+### 多租户
+
+可以给每个团队或用户发独立的数据面 key。上传的内容在整个服务端仍只存一份、只嵌入一次，
+但每个租户只能检索到自己上传过的内容和自己创建的 checkpoint——知道别的租户的 blob 名或
+checkpoint ID 也没用。
+
+1. 在 `.env` 里设置强随机的 `ADMIN_API_KEY`，并把 `API_KEY` 置空（`API_KEY=`）。
+   `API_KEY` 对应内置的 `default` 租户，升级前已索引的数据都归它；置空即关闭这个入口。
+   两个 key 都为空时 `/admin/*` 也会关闭。
+2. 创建租户。明文 key **只返回这一次**：
+
+   ```bash
+   curl -X POST http://127.0.0.1:8986/admin/tenants \
+     -H "Authorization: Bearer $ADMIN_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"name": "team-a"}'
+   ```
+
+3. 该租户的客户端改用返回的 `api_key`，替代 `API_KEY`。
+4. 轮换 key（旧 key 立即失效）或停用租户：
+
+   ```bash
+   curl -X POST http://127.0.0.1:8986/admin/tenants/<tenant_id>/rotate-key \
+     -H "Authorization: Bearer $ADMIN_API_KEY"
+   curl -X PATCH http://127.0.0.1:8986/admin/tenants/<tenant_id> \
+     -H "Authorization: Bearer $ADMIN_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"status": "disabled"}'
+   ```
+
+`GET /admin/tenants` 列出租户；`DELETE /admin/tenants/<tenant_id>` 删除租户及其
+checkpoint，并物理删除没有其他租户拥有的内容。`default` 租户由 `API_KEY` 管理，不能修改、
+轮换或删除。租户 key 永远不能访问 `/admin/*`。
+
+跨租户共享的内容，每个租户首次都要自己上传一次才能检索到（`find-missing` 会把它报告为
+unknown，客户端随即重传），但不会重复嵌入。
+
 ## 特性
 
 - **混合检索** —— 并发的 dense 语义召回（Milvus 3.0）、exact 精确标识符查找（`symbol_occurrences`）与独立路径索引，用加权 rank fusion 融合。
@@ -239,7 +276,7 @@ source map、lock 文件等非源码产物会在切块前被拒绝。被跳过�
 鉴权分三档：
 
 - **公开**（无需鉴权）—— `GET /health`、`GET /version`
-- **数据面** —— `Authorization: Bearer <API_KEY>`
+- **数据面** —— `Authorization: Bearer <API_KEY>` 或租户 key（见[多租户](#多租户)）
 - **Admin**（`/admin/*`）—— `Authorization: Bearer <ADMIN_API_KEY>`；未配置时回落到 `API_KEY`
 
 完整端点参考见运行实例上 FastAPI 自动生成的交互式文档：`http://127.0.0.1:8986/docs`。

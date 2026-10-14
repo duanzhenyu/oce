@@ -12,6 +12,7 @@ from oce.shared.errors import InvalidCheckpointTokenError, NeedsResetError
 
 @dataclass(frozen=True)
 class CheckpointCommand(Command):
+    tenant_id: str
     checkpoint_id: str | None = None
     added_blobs: tuple[str, ...] = ()
     deleted_blobs: tuple[str, ...] = ()
@@ -30,7 +31,7 @@ class CheckpointCommandHandler:
         async with self._uow_factory() as uow:
             if not command.checkpoint_id:
                 members = sorted(set(command.added_blobs) - set(command.deleted_blobs))
-                chain = await uow.chains.create(members)
+                chain = await uow.chains.create(members, command.tenant_id)
                 chain_id, version = chain.chain_id, chain.version
             else:
                 parsed = Chain.parse_checkpoint_token(command.checkpoint_id)
@@ -39,10 +40,12 @@ class CheckpointCommandHandler:
                 chain_id, _ = parsed
                 version = await uow.chains.apply_checkpoint(
                     chain_id,
+                    command.tenant_id,
                     command.added_blobs,
                     command.deleted_blobs,
                 )
                 if version is None:
+                    # 别人的 chain 与不存在同样处理，不暴露其存在
                     raise NeedsResetError("checkpoint 链不存在（服务端状态丢失）")
             await uow.chains.touch_members(chain_id)
             await uow.commit()

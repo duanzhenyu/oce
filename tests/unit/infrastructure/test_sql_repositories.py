@@ -10,6 +10,7 @@ from oce.infrastructure.persistence.sql_chunk_repo import SqlChunkRepository
 from oce.infrastructure.persistence.sql_exact_search_store import SqlExactSearchStore
 from oce.infrastructure.persistence.symbol_search_store import SymbolSearchStore
 from oce.infrastructure.persistence.sql_chain_repo import SqlChainRepository
+from oce.infrastructure.persistence.sql_ownership_repo import SqlOwnershipRepository
 from tests.conftest import make_sha256
 
 
@@ -19,11 +20,14 @@ async def sqlite_session():
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
     from oce.infrastructure.persistence.models import (
         BlobModel,
+        BlobStagingModel,
         ChunkModel,
         BlobChunkModel,
         ChainModel,
         ChainMemberModel,
         SymbolOccurrenceModel,
+        TenantBlobModel,
+        TenantModel,
     )
     from sqlalchemy.orm import declarative_base
 
@@ -32,6 +36,9 @@ async def sqlite_session():
     # 复制新表定义
     class TestBlob(Base):
         __table__ = BlobModel.__table__.to_metadata(Base.metadata)
+
+    class TestBlobStaging(Base):
+        __table__ = BlobStagingModel.__table__.to_metadata(Base.metadata)
 
     class TestChunk(Base):
         __table__ = ChunkModel.__table__.to_metadata(Base.metadata)
@@ -47,6 +54,12 @@ async def sqlite_session():
 
     class TestSymbolOccurrence(Base):
         __table__ = SymbolOccurrenceModel.__table__.to_metadata(Base.metadata)
+
+    class TestTenant(Base):
+        __table__ = TenantModel.__table__.to_metadata(Base.metadata)
+
+    class TestTenantBlob(Base):
+        __table__ = TenantBlobModel.__table__.to_metadata(Base.metadata)
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
 
@@ -233,7 +246,7 @@ async def test_chain_repository_checkpoint(sqlite_session):
 
     # 创建 Chain
     members = [make_sha256("blob1"), make_sha256("blob2")]
-    chain = await repo.create(members)
+    chain = await repo.create(members, "tenant-a")
     await sqlite_session.commit()
 
     assert chain.chain_id is not None
@@ -248,6 +261,7 @@ async def test_chain_repository_checkpoint(sqlite_session):
     # 应用 checkpoint
     new_version = await repo.apply_checkpoint(
         chain.chain_id,
+        "tenant-a",
         added=[make_sha256("blob3")],
         deleted=[make_sha256("blob1")],
     )
@@ -268,7 +282,7 @@ async def test_chain_repository_batches_large_member_sets(sqlite_session):
     repo = SqlChainRepository(sqlite_session)
     members = [make_sha256(f"blob-{index}") for index in range(17_000)]
 
-    chain = await repo.create(members)
+    chain = await repo.create(members, "tenant-a")
     await sqlite_session.commit()
 
     assert len(await repo.get_members(chain.chain_id)) == len(members)
@@ -342,3 +356,93 @@ async def test_blob_delete_only_removes_unreferenced_chunks(sqlite_session):
 
     assert await chunk_repo.get(shared.content_hash) is not None
     assert await chunk_repo.get(unique.content_hash) is None
+
+
+async def test_chain_exists_and_apply_are_tenant_scoped(sqlite_session):
+    repo = SqlChainRepository(sqlite_session)
+    member = make_sha256("a")
+    chain = await repo.create([member], "tenant-a")
+    await sqlite_session.commit()
+
+    assert await repo.exists(chain.chain_id, "tenant-a")
+    assert not await repo.exists(chain.chain_id, "tenant-b")
+    assert (
+        await repo.apply_checkpoint(chain.chain_id, "tenant-b", [make_sha256("b")], [member])
+        is None
+    )
+    assert await repo.get_members(chain.chain_id) == {member}
+
+
+async def test_ownership_grant_is_idempotent_and_filter_is_per_tenant(sqlite_session):
+    repo = SqlOwnershipRepository(sqlite_session)
+    names = [make_sha256(f"owned-{index}") for index in range(3)]
+
+    await repo.grant("tenant-a", names[:2])
+    await repo.grant("tenant-a", [names[0], names[0], names[1]])
+    await repo.grant("tenant-b", names[2:])
+    await sqlite_session.commit()
+
+    assert await repo.filter_owned("tenant-a", names) == set(names[:2])
+    assert await repo.filter_owned("tenant-b", names) == {names[2]}
+    assert await repo.filter_owned("tenant-a", []) == set()
+
+
+async def test_ownership_batches_large_name_sets(sqlite_session):
+    repo = SqlOwnershipRepository(sqlite_session)
+    names = [make_sha256(f"bulk-{index}") for index in range(2_500)]
+
+    await repo.grant("tenant-a", names)
+    await sqlite_session.commit()
+
+    assert await repo.filter_owned("tenant-a", names) == set(names)
+
+
+async def test_owned_chain_members_filters_foreign_chain_and_unowned_members(sqlite_session):
+    chains = SqlChainRepository(sqlite_session)
+    ownership = SqlOwnershipRepository(sqlite_session)
+    mine, unowned = make_sha256("mine"), make_sha256("unowned")
+    chain = await chains.create([mine, unowned], "tenant-a")
+    await ownership.grant("tenant-a", [mine])
+    await ownership.grant("tenant-b", [mine, unowned])
+    await sqlite_session.commit()
+
+    assert await ownership.owned_chain_members("tenant-a", chain.chain_id) == {mine}
+    assert await ownership.owned_chain_members("tenant-b", chain.chain_id) == set()
+
+
+async def test_blob_delete_removes_ownership_rows(sqlite_session):
+    blob_repo = SqlBlobRepository(sqlite_session)
+    ownership = SqlOwnershipRepository(sqlite_session)
+    doomed, kept = make_sha256("doomed"), make_sha256("kept")
+    await blob_repo.save_many([Blob(doomed, "doomed.py"), Blob(kept, "kept.py")])
+    await ownership.grant("tenant-a", [doomed, kept])
+    await ownership.grant("tenant-b", [doomed])
+    await sqlite_session.commit()
+
+    await blob_repo.delete_many([doomed])
+    await sqlite_session.commit()
+
+    assert await ownership.filter_owned("tenant-a", [doomed, kept]) == {kept}
+    assert await ownership.filter_owned("tenant-b", [doomed]) == set()
+
+
+async def test_blob_delete_removes_staging_and_symbol_rows(sqlite_session):
+    from sqlalchemy import func, select
+
+    from oce.infrastructure.persistence.models import SymbolOccurrenceModel
+
+    blob_repo = SqlBlobRepository(sqlite_session)
+    chunk = Chunk(make_sha256("symbol-chunk"), "a.py", "def secret():\n    pass\n", 1, 2)
+    await SqlChunkRepository(sqlite_session).save_many([chunk])
+    name = make_sha256("symbol-blob")
+    await blob_repo.save(Blob(name, "a.py", chunks=[chunk.to_ref()]))
+    await blob_repo.save_staging(name, "def secret():\n    pass\n")
+    await sqlite_session.commit()
+    symbols = select(func.count()).select_from(SymbolOccurrenceModel)
+    assert await sqlite_session.scalar(symbols) > 0
+
+    await blob_repo.delete_many([name])
+    await sqlite_session.commit()
+
+    assert await blob_repo.get_staging(name) is None
+    assert await sqlite_session.scalar(symbols) == 0

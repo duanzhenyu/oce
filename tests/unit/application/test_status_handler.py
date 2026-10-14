@@ -22,6 +22,8 @@ from oce.shared.errors import (
 
 from tests.unit.application.fakes import FakeUnitOfWorkFactory, blob_name
 
+TENANT = "tenant-a"
+
 
 @pytest.fixture
 def repos():
@@ -37,16 +39,21 @@ async def _save_ready_blob(blob_repo, path: str, content: str) -> str:
     return name
 
 
+async def _grant(factory, *names: str) -> None:
+    await factory.uow.ownership.grant(TENANT, names)
+
+
 class TestFindMissingQueryHandler:
     async def test_classifies_unknown_and_nonindexed(self, repos):
         factory, blob_repo, _ = repos
         ready = await _save_ready_blob(blob_repo, "src/a.py", "print(1)\n")
         pending = blob_name("src/b.py", "print(2)\n")
         blob_repo.blobs[pending] = Blob(blob_name=pending, path="src/b.py")
+        await _grant(factory, ready, pending, "ghost")
 
         handler = FindMissingQueryHandler(factory)
         result = await handler.handle(
-            FindMissingQuery(blob_names=(ready, pending, "ghost"))
+            FindMissingQuery(TENANT, blob_names=(ready, pending, "ghost"))
         )
 
         assert result.unknown == ("ghost",)
@@ -55,7 +62,7 @@ class TestFindMissingQueryHandler:
     async def test_empty_query_returns_empty(self, repos):
         factory, blob_repo, _ = repos
         result = await FindMissingQueryHandler(factory).handle(
-            FindMissingQuery(blob_names=())
+            FindMissingQuery(TENANT, blob_names=())
         )
         assert result.unknown == ()
         assert result.nonindexed == ()
@@ -65,27 +72,27 @@ class TestBlobStatusQueryHandler:
     async def test_no_checkpoint_id_is_noop(self, repos):
         factory, blob_repo, chain_repo = repos
         result = await BlobStatusQueryHandler(factory).handle(
-            BlobStatusQuery(blob_names=())
+            BlobStatusQuery(TENANT, blob_names=())
         )
         assert result.checkpoint_not_found is False
 
     async def test_malformed_token_reports_not_found(self, repos):
         factory, _, _ = repos
         result = await BlobStatusQueryHandler(factory).handle(
-            BlobStatusQuery(checkpoint_id="bad-token")
+            BlobStatusQuery(TENANT, checkpoint_id="bad-token")
         )
         assert result.checkpoint_not_found is True
 
     async def test_valid_token_checks_chain(self, repos):
         factory, _, chain_repo = repos
-        chain = await chain_repo.create(["a"])
+        chain = await chain_repo.create(["a"], TENANT)
         handler = BlobStatusQueryHandler(factory)
 
         found = await handler.handle(
-            BlobStatusQuery(checkpoint_id=chain.get_checkpoint_token())
+            BlobStatusQuery(TENANT, checkpoint_id=chain.get_checkpoint_token())
         )
         missing = await handler.handle(
-            BlobStatusQuery(checkpoint_id=f"{Chain.create(['x']).chain_id}:1")
+            BlobStatusQuery(TENANT, checkpoint_id=f"{Chain.create(['x']).chain_id}:1")
         )
 
         assert found.checkpoint_not_found is False
@@ -94,10 +101,12 @@ class TestBlobStatusQueryHandler:
     async def test_combines_blob_status(self, repos):
         factory, blob_repo, chain_repo = repos
         ready = await _save_ready_blob(blob_repo, "src/a.py", "print(1)\n")
-        chain = await chain_repo.create(["a"])
+        await _grant(factory, ready)
+        chain = await chain_repo.create(["a"], TENANT)
 
         result = await BlobStatusQueryHandler(factory).handle(
             BlobStatusQuery(
+                TENANT,
                 blob_names=(ready, "ghost"),
                 checkpoint_id=chain.get_checkpoint_token(),
             )
@@ -114,20 +123,21 @@ class TestResolveScopeQueryHandler:
     async def test_without_client_scope_raises(self, repos):
         factory, _, _ = repos
         with pytest.raises(ScopeRequiredError):
-            await ResolveScopeQueryHandler(factory).handle(ResolveScopeQuery())
+            await ResolveScopeQueryHandler(factory).handle(ResolveScopeQuery(TENANT))
 
     async def test_deleted_without_positive_scope_raises(self, repos):
         # deleted_blobs 只是减法，不构成工作集声明
         factory, _, _ = repos
         with pytest.raises(ScopeRequiredError):
             await ResolveScopeQueryHandler(factory).handle(
-                ResolveScopeQuery(deleted_blobs=("a",))
+                ResolveScopeQuery(TENANT, deleted_blobs=("a",))
             )
 
     async def test_added_blobs_only_forms_scope(self, repos):
         factory, _, _ = repos
+        await _grant(factory, "a", "b")
         result = await ResolveScopeQueryHandler(factory).handle(
-            ResolveScopeQuery(added_blobs=("a", "b"), deleted_blobs=("b",))
+            ResolveScopeQuery(TENANT, added_blobs=("a", "b"), deleted_blobs=("b",))
         )
         assert result.blob_names == frozenset({"a"})
 
@@ -135,7 +145,7 @@ class TestResolveScopeQueryHandler:
         factory, _, _ = repos
         with pytest.raises(InvalidCheckpointTokenError):
             await ResolveScopeQueryHandler(factory).handle(
-                ResolveScopeQuery(checkpoint_id="bad-token")
+                ResolveScopeQuery(TENANT, checkpoint_id="bad-token")
             )
 
     async def test_missing_chain_raises_needs_reset(self, repos):
@@ -143,14 +153,16 @@ class TestResolveScopeQueryHandler:
         ghost = f"{Chain.create(['x']).chain_id}:1"
         with pytest.raises(NeedsResetError):
             await ResolveScopeQueryHandler(factory).handle(
-                ResolveScopeQuery(checkpoint_id=ghost)
+                ResolveScopeQuery(TENANT, checkpoint_id=ghost)
             )
 
     async def test_checkpoint_members_plus_increments(self, repos):
         factory, _, chain_repo = repos
-        chain = await chain_repo.create(["a", "b"])
+        chain = await chain_repo.create(["a", "b"], TENANT)
+        await _grant(factory, "a", "b", "c")
         result = await ResolveScopeQueryHandler(factory).handle(
             ResolveScopeQuery(
+                TENANT,
                 checkpoint_id=chain.get_checkpoint_token(),
                 added_blobs=("c",),
                 deleted_blobs=("b",),
@@ -161,8 +173,8 @@ class TestResolveScopeQueryHandler:
     async def test_empty_chain_is_empty_scope_not_error(self, repos):
         # 有效但成员为空的 checkpoint → 空工作集（空结果），不算全库检索
         factory, _, chain_repo = repos
-        chain = await chain_repo.create([])
+        chain = await chain_repo.create([], TENANT)
         result = await ResolveScopeQueryHandler(factory).handle(
-            ResolveScopeQuery(checkpoint_id=chain.get_checkpoint_token())
+            ResolveScopeQuery(TENANT, checkpoint_id=chain.get_checkpoint_token())
         )
         assert result.blob_names == frozenset()

@@ -22,7 +22,7 @@ def handler():
 class TestCheckpointCommandHandler:
     async def test_create_new_chain_returns_version_1(self, handler):
         result = await handler.handle(
-            CheckpointCommand(added_blobs=("a", "b", "c"))
+            CheckpointCommand("tenant-a", added_blobs=("a", "b", "c"))
         )
 
         assert result.new_checkpoint_id.endswith(":1")
@@ -32,7 +32,7 @@ class TestCheckpointCommandHandler:
 
     async def test_create_new_chain_subtracts_deleted(self, handler):
         result = await handler.handle(
-            CheckpointCommand(added_blobs=("a", "b"), deleted_blobs=("b",))
+            CheckpointCommand("tenant-a", added_blobs=("a", "b"), deleted_blobs=("b",))
         )
 
         chain_id = result.new_checkpoint_id.rsplit(":", 1)[0]
@@ -40,10 +40,11 @@ class TestCheckpointCommandHandler:
         assert members == {"a"}
 
     async def test_apply_incremental_checkpoint(self, handler):
-        first = await handler.handle(CheckpointCommand(added_blobs=("a",)))
+        first = await handler.handle(CheckpointCommand("tenant-a", added_blobs=("a",)))
 
         result = await handler.handle(
             CheckpointCommand(
+                "tenant-a",
                 checkpoint_id=first.new_checkpoint_id,
                 added_blobs=("b",),
                 deleted_blobs=("a",),
@@ -60,11 +61,11 @@ class TestCheckpointCommandHandler:
 
         with pytest.raises(NeedsResetError):
             await handler.handle(
-                CheckpointCommand(checkpoint_id=token, added_blobs=("a",))
+                CheckpointCommand("tenant-a", checkpoint_id=token, added_blobs=("a",))
             )
 
     async def test_malformed_token_raises_invalid(self, handler):
         with pytest.raises(InvalidCheckpointTokenError):
             await handler.handle(
-                CheckpointCommand(checkpoint_id="bad-token", added_blobs=("a",))
+                CheckpointCommand("tenant-a", checkpoint_id="bad-token", added_blobs=("a",))
             )

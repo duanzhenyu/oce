@@ -26,6 +26,7 @@ from oce.shared.errors import (
     ServiceNotReadyError,
 )
 
+# 端点再以 Depends(verify_api_key) 取 tenant_id：FastAPI 同一请求内缓存依赖，不会重复鉴权
 router = APIRouter(tags=["Retrieval"], dependencies=[Depends(verify_api_key)])
 
 def get_application() -> RetrievalApplication:
@@ -40,8 +41,11 @@ def _service_unavailable(exc: ServiceNotReadyError) -> HTTPException:
 async def find_missing(
     request: FindMissingRequest,
     application: RetrievalApplication = Depends(get_application),
+    tenant_id: str = Depends(verify_api_key),
 ) -> FindMissingResponse:
-    result = await application.find_missing(request.mem_object_names)
+    result = await application.find_missing(
+        request.mem_object_names, tenant_id=tenant_id
+    )
     return FindMissingResponse(
         unknown_memory_names=list(result.unknown),
         nonindexed_blob_names=list(result.nonindexed),
@@ -52,10 +56,12 @@ async def find_missing(
 async def batch_upload(
     request: BatchUploadRequest,
     application: RetrievalApplication = Depends(get_application),
+    tenant_id: str = Depends(verify_api_key),
 ) -> BatchUploadResponse:
     try:
         result = await application.batch_upload(
             [BlobUpload(blob.path, blob.content) for blob in request.blobs],
+            tenant_id=tenant_id,
             checkpoint_id=request.checkpoint_id or None,
         )
     except ServiceNotReadyError as exc:
@@ -67,11 +73,16 @@ async def batch_upload(
     return BatchUploadResponse(blob_names=list(result.blob_names))
 
 
-async def _retrieve(application: RetrievalApplication, request: CodebaseRetrievalRequest):
+async def _retrieve(
+    application: RetrievalApplication,
+    request: CodebaseRetrievalRequest,
+    tenant_id: str,
+):
     payload = request.blobs
     try:
         return await application.retrieve(
             request.information_request,
+            tenant_id=tenant_id,
             checkpoint_id=payload.checkpoint_id or None,
             added_blobs=payload.added_blobs,
             deleted_blobs=payload.deleted_blobs,
@@ -88,8 +99,9 @@ async def _retrieve(application: RetrievalApplication, request: CodebaseRetrieva
 async def codebase_retrieval(
     request: CodebaseRetrievalRequest,
     application: RetrievalApplication = Depends(get_application),
+    tenant_id: str = Depends(verify_api_key),
 ) -> CodebaseRetrievalResponse:
-    result = await _retrieve(application, request)
+    result = await _retrieve(application, request, tenant_id)
     return CodebaseRetrievalResponse(
         formatted_retrieval=result.formatted_retrieval,
         codebase_retrieval_elapsed_ms=result.elapsed_ms,
@@ -100,10 +112,12 @@ async def codebase_retrieval(
 async def checkpoint_blobs(
     request: CheckpointBlobsRequest,
     application: RetrievalApplication = Depends(get_application),
+    tenant_id: str = Depends(verify_api_key),
 ) -> CheckpointBlobsResponse:
     payload = request.blobs
     try:
         result = await application.checkpoint(
+            tenant_id=tenant_id,
             checkpoint_id=payload.checkpoint_id or None,
             added_blobs=payload.added_blobs,
             deleted_blobs=payload.deleted_blobs,
@@ -119,8 +133,10 @@ async def checkpoint_blobs(
 async def blob_status(
     request: BlobStatusRequest,
     application: RetrievalApplication = Depends(get_application),
+    tenant_id: str = Depends(verify_api_key),
 ) -> BlobStatusResponse:
     result = await application.blob_status(
+        tenant_id=tenant_id,
         blob_names=request.blobs.added_blobs,
         checkpoint_id=request.blobs.checkpoint_id or None,
     )

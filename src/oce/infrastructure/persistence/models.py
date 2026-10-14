@@ -17,6 +17,7 @@ from sqlalchemy import (
     func,
 )
 
+from oce.domain.tenant import DEFAULT_TENANT_ID
 from oce.shared.database.session import Base
 
 
@@ -174,10 +175,51 @@ class BlobChunkModel(Base):
     )
 
 
+class TenantModel(Base):
+    """数据面租户：租户 key 只存 sha256；default 行的 hash 为 NULL（其 key 是 env API_KEY）。"""
+
+    __tablename__ = "tenants"
+
+    tenant_id = Column(String(64), primary_key=True)
+    name = Column(String(128), nullable=False)
+    api_key_hash = Column(String(64))
+    api_key_last4 = Column(String(4), nullable=False, server_default="")
+    status = Column(String(16), nullable=False, server_default="active")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_tenants_name"),
+        UniqueConstraint("api_key_hash", name="uq_tenants_api_key_hash"),
+    )
+
+
+class TenantBlobModel(Base):
+    """租户对 blob 的归属，只由上传授予；检索范围必须与之取交集。"""
+
+    __tablename__ = "tenant_blobs"
+
+    tenant_id = Column(
+        String(64),
+        ForeignKey("tenants.tenant_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    blob_name = Column(
+        String(64),
+        ForeignKey("blobs.blob_name", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (Index("ix_tenant_blobs_blob_name", "blob_name"),)
+
+
 class ChainModel(Base):
     __tablename__ = "chains"
 
     chain_id = Column(String(64), primary_key=True)
+    # 不加外键：SQLite 才能直接 ADD COLUMN；删除租户时由 store 显式清理
+    tenant_id = Column(String(64), nullable=False, server_default=DEFAULT_TENANT_ID)
     version = Column(Integer, nullable=False, default=1)
     description = Column(String(512))
     total_blobs = Column(Integer, nullable=False, default=0)
@@ -190,7 +232,10 @@ class ChainModel(Base):
         onupdate=func.now(),
     )
 
-    __table_args__ = (Index("ix_chains_updated_at", "updated_at"),)
+    __table_args__ = (
+        Index("ix_chains_updated_at", "updated_at"),
+        Index("ix_chains_tenant_id", "tenant_id"),
+    )
 
 
 class ChainMemberModel(Base):

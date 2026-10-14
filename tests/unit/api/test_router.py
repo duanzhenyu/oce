@@ -30,7 +30,7 @@ class StubApplication:
     async def reload_embedding_credentials(self):
         return SimpleNamespace(reloaded=True, pool_size=1, reason=None)
 
-    async def find_missing(self, names):
+    async def find_missing(self, names, **kwargs):
         return SimpleNamespace(unknown=("missing",), nonindexed=("pending",))
 
     async def batch_upload(self, blobs, **kwargs):
@@ -138,6 +138,60 @@ async def test_batch_upload_contract():
         )
     assert response.status_code == 200
     assert response.json() == {"blob_names": ["blob-hash"]}
+
+
+async def test_data_plane_endpoints_pass_tenant_id_through():
+    calls: list[tuple[str, str]] = []
+
+    class TenantRecordingApplication(StubApplication):
+        async def find_missing(self, names, *, tenant_id):
+            calls.append(("find-missing", tenant_id))
+            return await super().find_missing(names)
+
+        async def batch_upload(self, blobs, *, tenant_id, **kwargs):
+            calls.append(("batch-upload", tenant_id))
+            return await super().batch_upload(blobs, **kwargs)
+
+        async def retrieve(self, information_request, *, tenant_id, **kwargs):
+            calls.append(("codebase-retrieval", tenant_id))
+            return await super().retrieve(information_request, **kwargs)
+
+        async def checkpoint(self, *, tenant_id, **kwargs):
+            calls.append(("checkpoint-blobs", tenant_id))
+            return await super().checkpoint(**kwargs)
+
+        async def blob_status(self, *, tenant_id, **kwargs):
+            calls.append(("blob-status", tenant_id))
+            return await super().blob_status(**kwargs)
+
+    requests = [
+        ("find-missing", "/find-missing", {"mem_object_names": []}),
+        (
+            "batch-upload",
+            "/batch-upload",
+            {"blobs": [{"path": "src/main.py", "content": "def main(): pass"}]},
+        ),
+        (
+            "codebase-retrieval",
+            "/agents/codebase-retrieval",
+            {"information_request": "q", "blobs": {}},
+        ),
+        ("checkpoint-blobs", "/checkpoint-blobs", {"blobs": {}}),
+        ("blob-status", "/agents/blob-status", {"blobs": {}}),
+    ]
+    transport = _transport()
+    app.dependency_overrides[get_application] = lambda: TenantRecordingApplication()
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for tenant in ("tenant-a", "tenant-b"):
+            for _, url, body in requests:
+                response = await client.post(
+                    url, headers={"Authorization": f"Bearer {tenant}"}, json=body
+                )
+                assert response.status_code == 200, (url, response.text)
+
+    assert calls == [
+        (name, tenant) for tenant in ("tenant-a", "tenant-b") for name, _, _ in requests
+    ]
 
 
 async def test_batch_upload_passes_checkpoint_id():

@@ -64,6 +64,23 @@ class CredentialConflictError(ApplicationError):
         )
 
 
+class TenantConflictError(ApplicationError):
+    """新建/改名租户命中唯一约束：同名租户已存在。"""
+
+    def __init__(self, reason: str | None = None) -> None:
+        super().__init__(reason or "同名租户已存在", code="TENANT_CONFLICT")
+
+
+class DefaultTenantImmutableError(ApplicationError):
+    """内置 default 租户由 env API_KEY 管理，不可经 admin API 修改、轮换 key 或删除。"""
+
+    def __init__(self, reason: str | None = None) -> None:
+        super().__init__(
+            reason or "default 租户由 API_KEY 环境变量管理，不可修改、轮换 key 或删除",
+            code="DEFAULT_TENANT_IMMUTABLE",
+        )
+
+
 class ScopeRequiredError(ApplicationError):
     """检索请求未声明工作集：必须提供 checkpoint_id 或 added_blobs。
 

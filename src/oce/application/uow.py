@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from oce.domain.repositories import BlobRepository, ChainRepository, ChunkRepository
+from oce.domain.repositories import (
+    BlobRepository,
+    ChainRepository,
+    ChunkRepository,
+    OwnershipRepository,
+)
 
 
 class UnitOfWork(Protocol):
     blobs: BlobRepository
     chunks: ChunkRepository
     chains: ChainRepository
+    ownership: OwnershipRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 
